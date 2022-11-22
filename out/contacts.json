@@ -1,0 +1,56 @@
+[
+    {
+        "uid": "9C3C3047-41DC-4D19-BEF1-5202BE1E5D34",
+        "organization": "Apple Inc.",
+        "phone": [
+            [
+                "Home",
+                "1-800-MY-APPLE"
+            ],
+            [
+                "Office",
+                "123-123-1234"
+            ]
+        ],
+        "url": [
+            [
+                "HomePage",
+                "http://www.apple.com"
+            ]
+        ],
+        "address": [
+            [
+                "Work",
+                {
+                    "street": "1 Infinite Loop",
+                    "city": "Cupertino",
+                    "state": "CA",
+                    "zip": "95014",
+                    "country": "United States",
+                    "country code": "us"
+                }
+            ]
+        ],
+        "ims": [
+            {
+                "path": "/foo/in/My Contacts.abbu/Images/C13384AC-D081-4190-B5CB-DAEEE889A64D",
+                "info": "TIFF image data, big-endian, direntries=14, height=320, bps=6, compression=none, PhotometricIntepretation=RGB, orientation=upper-left, width=320\n",
+                "image type": "tiff",
+                "base name": "C13384AC-D081-4190-B5CB-DAEEE889A64D",
+                "dst": "/foo/out/ims/Apple-Inc__C13384AC-D081-4190-B5CB-DAEEE889A64D.tiff"
+            }
+        ]
+    },
+    {
+        "uid": "E7AA01D5-DCE3-4B92-9834-0B2E15AEBD3B",
+        "first": "bob",
+        "last": "johnson",
+        "organization": "acme corp",
+        "phone": [
+            [
+                "Mobile",
+                "123-123-1234"
+            ]
+        ]
+    }
+]

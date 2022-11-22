@@ -1,9 +1,6 @@
 
 # Mac Address Book ABBU file to JSON
 
-- Justin Pearson
-- Nov 22, 2022
-
 This python script converts a Apple "Contacts Archive" (eg, `My Contacts.abbu`) into a nice JSON format.
 It also extracts images stored in the .abbu file.
 
@@ -45,60 +42,60 @@ This script parses the contacts and images in the .abbu file,
 and creates 3 kinds of outputs in the `out/` directory:
 
 1. `contacts.json` contains the contacts, formatted nicely:
-   ```
-      {
-          "uid": "C13384AC-D081-4190-B5CB-DAEEE889A64D",
-          "organization": "Apple Inc.",
-          "phone": [
-              [
-                  "Main",
-                  "1-800-MY-APPLE"
-              ],
-              [
-                  "Office",
-                  "123-123-1234"
-              ]
-          ],
-          "url": [
-              [
-                  "HomePage",
-                  "http://www.apple.com"
-              ]
-          ],
-          "address": [
-              [
-                  "Work",
-                  {
-                      "street": "1 Infinite Loop",
-                      "city": "Cupertino",
-                      "state": "CA",
-                      "zip": "95014",
-                      "country": "United States",
-                      "country code": "us"
-                  }
-              ]
-          ],
-          "ims": [
-              {
-                  "path": "/foo/in/My-Contacts.abbu/Images/C13384AC-D081-4190-B5CB-DAEEE889A64D",
-                  "info": "TIFF image data, big-endian, direntries=14, height=320, bps=6, compression=none, PhotometricIntepretation=RGB, orientation=upper-left, width=320\n",
-                  "image type": "tiff",
-                  "base name": "C13384AC-D081-4190-B5CB-DAEEE889A64D",
-                  "dst": "/foo/out/ims/Apple-Inc__C13384AC-D081-4190-B5CB-DAEEE889A64D.tiff"
-              }
-          ]
-      }, ...
-      ```
-  - Note: the email / address / url / phone fields may have multiple "types", eg, home, work, etc.
-  - Note: I preserve the UID in case you need it, like for matching up images with contacts.
-  - Note: This json format supports the case where 1 contact has multiple images in the .abbu file. I don't know why an .abbu file has multiple images for some contacts, but it does.
+    ```
+    {
+        "uid": "C13384AC-D081-4190-B5CB-DAEEE889A64D",
+        "organization": "Apple Inc.",
+        "phone": [
+            [
+                "Main",
+                "1-800-MY-APPLE"
+            ],
+            [
+                "Office",
+                "123-123-1234"
+            ]
+        ],
+        "url": [
+            [
+                "HomePage",
+                "http://www.apple.com"
+            ]
+        ],
+        "address": [
+            [
+                "Work",
+                {
+                    "street": "1 Infinite Loop",
+                    "city": "Cupertino",
+                    "state": "CA",
+                    "zip": "95014",
+                    "country": "United States",
+                    "country code": "us"
+                }
+            ]
+        ],
+        "ims": [
+            {
+                "path": "/foo/in/My-Contacts.abbu/Images/C13384AC-D081-4190-B5CB-DAEEE889A64D",
+                "info": "TIFF image data, big-endian, direntries=14, height=320, bps=6, compression=none, PhotometricIntepretation=RGB, orientation=upper-left, width=320\n",
+                "image type": "tiff",
+                "base name": "C13384AC-D081-4190-B5CB-DAEEE889A64D",
+                "dst": "/foo/out/ims/Apple-Inc__C13384AC-D081-4190-B5CB-DAEEE889A64D.tiff"
+            }
+        ]
+    }, ...
+    ```
+    - Note: the email / address / url / phone fields may have multiple "types", eg, home, work, etc.
+    - Note: I preserve the UID in case you need it, like for matching up images with contacts.
+    - Note: This json format supports the case where 1 contact has multiple images in the .abbu file. I don't know why an .abbu file has multiple images for some contacts, but it does.
 
 2. The `ims/` directory contains copies of images that were found in the abbu file.
-   To make the image filenames easier to use, I prepend the first name, last name, and organization.
-   Also I add a file extension.
+    To make the image filenames easier to use, I prepend the first name, last name, and organization.
+    Also I add a file extension.
 
 3. The `ims/orphans/` directory contains copies of images that were found in the abbu file,
-   but whose filenames (UIDs) don't map to any UID of any contact.
+    but whose filenames (UIDs) don't map to any UID of any contact.
 
 
 
@@ -108,26 +105,26 @@ and creates 3 kinds of outputs in the `out/` directory:
 An Apple "Contacts Archive" is a directory like `foo.abbu`. I think the `ab` stands for "Address Book". It stores contacts and their images in 3 main ways:
 
 1. Contacts (first name, last name, phone number, etc) are stored in a SQLite3 db named `foo.abbu/AddressBook-v22.abcddb`.
-  - The main table is `ZABCDRECORD` and other tables like `ZABCDEMAILADDRESS` have a column `ZOWNER` or `ZCONTACT` that's a foreign key to `ZABCDRECORD.Z_PK`. 
-    - My script automatically joins to `ZABCDRECORD` any table with a `ZOWNER` or `ZCONTACT` column, to try to extract all relevant info from the SQLite db.
-	- For my initial exploration, I used [DB Browser for SQLite.app](https://sqlitebrowser.org/) to browse this db, and I had to copy the db into a safe location in my home folder, not in `~/Library/`, to avoid file-permissions errors with `~/Library`.
+    - The main table is `ZABCDRECORD` and other tables like `ZABCDEMAILADDRESS` have a column `ZOWNER` or `ZCONTACT` that's a foreign key to `ZABCDRECORD.Z_PK`. 
+        - My script automatically joins to `ZABCDRECORD` any table with a `ZOWNER` or `ZCONTACT` column, to try to extract all relevant info from the SQLite db.
+    - For my initial exploration, I used [DB Browser for SQLite.app](https://sqlitebrowser.org/) to browse this db, and I had to copy the db into a safe location in my home folder, not in `~/Library/`, to avoid file-permissions errors with `~/Library`.
 
 2. Contact info also appears in Apple binary plist files with extension `.abcdp`, e.g., `foo.abbu/Metadata/95693224-BE9F-4E3C-8D13-86CDF31FF941:ABPerson.abcdp`.
-  - See the contents of the `.abcdp` file with `plutil -p 'foo.abbu/Metadata/C34E458D-9B42-4818-8E27-64B4D0B41540:ABPerson.abcdp'`
-  - Each `.abcdp` file contains one person's info.
-  - In my experience, every `.abcdp` file seems to corresponds to 1 person in the db, and the .abcdp contains a subset of what's in the SQLite db for that person.
-    - So you could probably safely ignore the `.abcdp` files. But to be safe, my script imports them and verifies all their info is already stored in the db-based contacts.
-  - Importantly, not all contacts in the db have a .abcdp file. So if you simply use `plutil` to extract the `.abcdp` files, like [this answer](https://apple.stackexchange.com/a/223875/145895) says, you'll miss many contacts!
+    - See the contents of the `.abcdp` file with `plutil -p 'foo.abbu/Metadata/C34E458D-9B42-4818-8E27-64B4D0B41540:ABPerson.abcdp'`
+    - Each `.abcdp` file contains one person's info.
+    - In my experience, every `.abcdp` file seems to corresponds to 1 person in the db, and the .abcdp contains a subset of what's in the SQLite db for that person.
+        - So you could probably safely ignore the `.abcdp` files. But to be safe, my script imports them and verifies all their info is already stored in the db-based contacts.
+    - Importantly, not all contacts in the db have a .abcdp file. So if you simply use `plutil` to extract the `.abcdp` files, like [this answer](https://apple.stackexchange.com/a/223875/145895) says, you'll miss many contacts!
 
 
 3. Images are stored in `foo.abbu/Images/`, as files with or without file extensions, named after their UID in the SQLite db.
-  - Image files may not have file extensions.
-    - When my script copies an image into `out/`, it appends the file extension for easy viewing.
-  - Image files are not just jpgs, but also tiffs.
-  - The `foo.abbu` Contact Archive may not have an `Images/` directory.
-  - Not all contacts in the SQLite db have images.
-  - For some reason, there seem to be a lot of image files with different UIDs, but it's all the same the picture (it's the same person). Sometimes the image is cropped slightly differently. Weird.
-  - Lots of images' UIDs don't actually appear in the DB. It's like a contact was deleted out of the DB but its corresponding image wasn't deleted.
+    - Image files may not have file extensions.
+        - When my script copies an image into `out/`, it appends the file extension for easy viewing.
+    - Image files are not just jpgs, but also tiffs.
+    - The `foo.abbu` Contact Archive may not have an `Images/` directory.
+    - Not all contacts in the SQLite db have images.
+    - For some reason, there seem to be a lot of image files with different UIDs, but it's all the same the picture (it's the same person). Sometimes the image is cropped slightly differently. Weird.
+    - Lots of images' UIDs don't actually appear in the DB. It's like a contact was deleted out of the DB but its corresponding image wasn't deleted.
 
 
 - Lastly, `foo.abbu` sometimes contains a `Sources/` dir that seems to contain other `.abcddb` sqlite dbs, other `.abcdp` files, and other `Images/` directories. My program finds and parses them all. So there may be duplicate contacts.
@@ -139,3 +136,10 @@ An Apple "Contacts Archive" is a directory like `foo.abbu`. I think the `ab` sta
 - If you run this program multiple times, you should delete the images out of `ims/` and `ims/orphans/`,
 or else you'll end up with image copies like `foo__2.jpg`, `foo__3.jpg`, etc. This is because my program
 tries not to overwrite image files as it copies them out of the .abbu file.
+
+# Credits
+
+- Justin Pearson
+- https://justinppearson.com
+- Nov 22, 2022
+

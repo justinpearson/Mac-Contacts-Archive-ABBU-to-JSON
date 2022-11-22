@@ -1,5 +1,5 @@
 
-# Mac Address Book ABBU file to JSON
+# Mac Contacts Archive (ABBU file) to JSON
 
 This python script converts a Apple "Contacts Archive" (eg, `My Contacts.abbu`) into a nice JSON format.
 It also extracts images stored in the .abbu file.

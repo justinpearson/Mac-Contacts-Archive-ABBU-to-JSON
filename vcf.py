@@ -164,6 +164,17 @@ def _dedupe(items):
     return res
 
 
+def _dedupe_by(labeled_values, keyfn):
+    '''Drop (label, value) pairs whose normalized value was already seen; the first label wins.'''
+    seen, res = set(), []
+    for lab, val in labeled_values:
+        k = keyfn(val or '')
+        if k not in seen:
+            seen.add(k)
+            res.append((lab, val))
+    return res
+
+
 def merge_extras(list_of_extras):
     '''Combine the {uid: extras} dicts from several dbs (a person can appear in more than one).'''
     out = {}
@@ -231,9 +242,9 @@ def contact_to_vcard(c, x=None):
     '''One contact dict (+ its extras dict) as a vCard 3.0 string. Returns (text, has_photo).'''
     x = x or {}
     first, last, org = c.get('first', ''), c.get('last', ''), c.get('organization', '')
-    phones = _dedupe(c.get('phone', []))
-    emails = _dedupe(c.get('email', []))
-    urls = _dedupe(c.get('url', []))
+    phones = _dedupe_by(c.get('phone', []), lambda v: _phone_key(v) or v.strip().lower())
+    emails = _dedupe_by(c.get('email', []), lambda v: v.strip().lower())
+    urls = _dedupe_by(c.get('url', []), lambda v: v.strip().lower())
     addrs = _dedupe(c.get('address', []))
 
     fn = ' '.join(p for p in (x.get('prefix'), first, x.get('middle'), last, x.get('suffix')) if p) or org \
@@ -314,15 +325,85 @@ def _norm(s):
 
 
 def sort_key(c):
-    '''Like Contacts: sort by last name (else first name, else organization), then first name.
-    Contacts with no name at all sort by their email or phone. Names starting with a letter come first,
-    then digits/symbols, then anything left with nothing to sort by.'''
-    first, last, org = c.get('first', ''), c.get('last', ''), c.get('organization', '')
-    # Nameless contacts display as their email or phone (see contact_to_vcard), so sort by that.
-    fallback = (c.get('email') or c.get('phone') or [('', '')])[0][1]
-    primary = _norm(last or first or org or fallback)
-    group = 2 if not primary else (0 if primary[0].isalpha() else 1)
-    return (group, primary, _norm(first), _norm(last), _norm(org), c['uid'])
+    '''Strict sort by last name, then first name, then organization (case- and accent-insensitive).
+    Contacts whose last name starts with a letter come first, then last names starting with a digit or
+    symbol, then contacts with no last name at all (ordered by first name, then organization).'''
+    last, first, org = _norm(c.get('last', '')), _norm(c.get('first', '')), _norm(c.get('organization', ''))
+    group = 2 if not last else (0 if last[0].isalpha() else 1)
+    return (group, last, first, org, c['uid'])
+
+
+LIST_FIELDS = ('phone', 'email', 'url', 'address')
+
+
+def _phone_key(v):
+    d = re.sub(r'\D', '', v or '')
+    return d[-10:] if len(d) >= 7 else ''  # compare on the last 10 digits so +1 / country prefixes don't matter
+
+
+def _match_keys(c):
+    '''The identifiers two same-named cards can be merged on: lowercased emails and digit-only phones.'''
+    keys = {('e', v.strip().lower()) for _, v in c.get('email', []) if v and v.strip()}
+    keys |= {('p', _phone_key(v)) for _, v in c.get('phone', []) if _phone_key(v)}
+    return keys
+
+
+def _merge_contacts(group):
+    '''Merge cards (already sorted, so the first is the base): union the list fields, first non-empty scalar wins.'''
+    m = {k: (list(v) if isinstance(v, list) else v) for k, v in group[0].items()}
+    for c in group[1:]:
+        for k, v in c.items():
+            if k in LIST_FIELDS or isinstance(v, list):
+                m[k] = _dedupe(m.get(k, []) + list(v))
+            elif not m.get(k):
+                m[k] = v
+    return m
+
+
+def dedupe_contacts(sorted_contacts, extras):
+    '''Merge cards with the same first name, last name and a shared email or phone.
+    Expects contacts already sorted with sort_key, so cards with the same name are adjacent.
+    Cards with no person name (organization only) must also share the organization.
+    Returns (merged contacts, extras dict for them, number of cards removed).
+    '''
+    name_key = lambda c: (_norm(c.get('first', '')), _norm(c.get('last', '')),
+                          '' if (c.get('first') or c.get('last')) else _norm(c.get('organization', '')))
+    out, new_extras, removed = [], dict(extras), 0
+    i = 0
+    while i < len(sorted_contacts):
+        j = i
+        while j < len(sorted_contacts) and name_key(sorted_contacts[j]) == name_key(sorted_contacts[i]):
+            j += 1
+        block = sorted_contacts[i:j]
+        i = j
+        # union-find over the block: cards sharing any email/phone end up in one cluster
+        parent = list(range(len(block)))
+        def find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+        owner = {}
+        for idx, c in enumerate(block):
+            for k in _match_keys(c):
+                if k in owner:
+                    parent[find(idx)] = find(owner[k])
+                else:
+                    owner[k] = idx
+        clusters = {}
+        for idx in range(len(block)):
+            clusters.setdefault(find(idx), []).append(block[idx])
+        for group in clusters.values():  # dicts keep first-seen order, so alphabetical order is preserved
+            if len(group) == 1:
+                out.append(group[0])
+                continue
+            merged = _merge_contacts(group)
+            ex = merge_extras([{'x': extras[c['uid']]} for c in group if c['uid'] in extras]).get('x')
+            if ex:
+                new_extras[merged['uid']] = ex
+            out.append(merged)
+            removed += len(group) - 1
+    return out, new_extras, removed
 
 
 def export_vcf(contacts, outdir, max_per_file=500, extras=None):
@@ -339,6 +420,8 @@ def export_vcf(contacts, outdir, max_per_file=500, extras=None):
     named = [c for c in contacts if any((c.get(k) or '').strip() for k in ('first', 'last', 'organization'))]
     dropped = len(contacts) - len(named)
     cs = sorted(named, key=sort_key)
+    cs, extras, merged_away = dedupe_contacts(cs, extras)
+    cs.sort(key=sort_key)  # merging can fill in fields (eg organization) that change a card's sort position
     nfiles = max(1, -(-len(cs) // max_per_file))
     width = max(3, len(str(nfiles)))
     files, photos, skipped_photos = [], 0, 0
@@ -354,6 +437,6 @@ def export_vcf(contacts, outdir, max_per_file=500, extras=None):
                 fh.write(text)
         print(f'Wrote {len(chunk)} contacts to {f}')
         files.append(f)
-    print(f'VCF: dropped {dropped} contacts with no name or organization.')
+    print(f'VCF: dropped {dropped} contacts with no name or organization; merged away {merged_away} duplicate cards.')
     print(f'VCF: {len(cs)} contacts in {nfiles} file(s); {photos} photos embedded; {skipped_photos} photos skipped (unsupported image type).')
     return files

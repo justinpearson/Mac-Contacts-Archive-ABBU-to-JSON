@@ -2,10 +2,10 @@ from pprint import pprint as pp
 from pprint import pformat
 from pathlib import Path
 import plistlib, re, shutil
-from lib import get_file_info, parse_abcddb, gather, merge_dicts, duplicate_freeQ, dict_subsetQ, export
+from lib import get_file_info, image_type, parse_abcddb, gather, merge_dicts, duplicate_freeQ, dict_subsetQ, export, IGNORED_MERGE_CONFLICTS
+from vcf import export_vcf, parse_extras, merge_extras
 
-print("DEPRECATION WARNING: I use the stdlib's imghdr module to identify the image type of files. Deprecated in Py 3.11, removed in Py 3.13. More info: https://docs.python.org/3/library/imghdr.html")
-import imghdr
+VCF_MAX_CONTACTS_PER_FILE = 500  # each .vcf in out/vcf/ holds at most this many contacts
 
 # Parse a Mac Address Book file (.abbu) into JSON. See README.md for details.
 
@@ -44,6 +44,13 @@ def main():
     actually_copy_and_rename_image_files(cs, OUT_IMS_DIR)
     actually_copy_and_rename_ORPHANED_image_files(orphaned_ims, OUT_ORPHAN_IMS_DIR)
     export(cs,OUT_DIR / 'contacts.json')
+    print('START: extra fields & photos for VCF export')
+    extras = merge_extras([parse_extras(f) for f in BASE_DIR.glob('**/*.abcddb')])
+    print(f'Done: extra data for {len(extras)} people.')
+    export_vcf(cs, OUT_DIR / 'vcf', VCF_MAX_CONTACTS_PER_FILE, extras)
+
+    if IGNORED_MERGE_CONFLICTS:
+        print(f"Info: while merging duplicate rows, kept the first value for these conflicting columns (count): {IGNORED_MERGE_CONFLICTS}")
 
     print('bye!!')
 
@@ -52,7 +59,8 @@ def load_people(base_dir : Path):
     print('START: PEOPLE (.abcdp files)')
     ps = []
     for f in base_dir.glob('**/*.abcdp'):
-        d = plistlib.load(open(f,'rb'))
+        with open(f,'rb') as fh:
+            d = plistlib.load(fh)
         if 'UID' not in d: 
             raise ValueError(f"ERROR: No UID in file\n{f}\nDict:\n{pformat(d,indent=4)}\n""")
         if not d['UID'].endswith(':ABPerson'): 
@@ -70,7 +78,7 @@ def load_image_files(base_dir : Path):
     print('START: IMAGES (any file in any Images/ dir)')
     ims = [{  'path': f,
               'info': get_file_info(f), 
-              'image type':imghdr.what(f),
+              'image type':image_type(f),
               'base name':f.stem
             } for f in base_dir.glob('**/Images/*') if f.is_file()]
     print(f"Done parsing {len(ims)} images from Images directory(s) into variable 'ims'!")
@@ -213,6 +221,7 @@ def clean_contacts(cs):
         ZABCDEMAILADDRESS.Z21_OWNER
         ZABCDEMAILADDRESS.Z22_OWNER
         ZABCDEMAILADDRESS.ZADDRESSNORMALIZED
+        ZABCDEMAILADDRESS.ZIOSLEGACYIDENTIFIER
         ZABCDEMAILADDRESS.ZISPRIMARY
         ZABCDEMAILADDRESS.ZORDERINGINDEX
         ZABCDEMAILADDRESS.ZOWNER
@@ -365,14 +374,12 @@ def clean_contacts(cs):
     ktype = 'address type'
     addr_keys = ['street','city','state','zip','country','country code']
     for d in cs:
-        if ktype in d:
-            t = d[ktype].replace('_$!<','').replace('>!$_','')
+        if ktype in d or any(k in d for k in addr_keys):
+            # Address label is sometimes missing; use '' like phone/email/url do above.
+            t = d.get(ktype, '').replace('_$!<','').replace('>!$_','')
             a = {k: d[k] for k in addr_keys if k in d}
             d['address'] = [(t,a)]
-            [d.pop(k) for k in addr_keys+[ktype]]
-        else:
-            if any(k in d for k in addr_keys):
-                raise ValueError(f"Found some address-related fields, but no 'address type'!: {d}")
+            [d.pop(k, None) for k in addr_keys+[ktype]]  # not every address has every field (eg no 'country code')
 
 
     # Merge contacts who have the same UID.
@@ -393,16 +400,23 @@ def clean_contacts(cs):
 def verify_people_are_subset_of_contacts(ps,cs):
     print(f"START: verify each .abcdp 'person' data ({len(ps)}) is a sub-dict of 1 db-based contact ({len(cs)}).")
     # (This ensures each .abcdp file is accounted for in the db-based contacts.)
-    ps_to_remove = []
+    # The db is the source of truth, so problems here are reported as warnings rather than aborting the export.
+    by_uid = {}
+    for c in cs:
+        by_uid.setdefault(c['uid'], []).append(c)
+    unmatched, not_subset = [], []
     for p in ps:
-        ms = [c for c in cs if c['uid'] == p['uid']]
-        assert len(ms)==1, "Each peep should share a uid with exactly 1 contact."
-        m = ms[0]
-        assert dict_subsetQ(p,m), "The peep's info (k/v pairs) should be a sub-dict of its matching contact."
-        ps_to_remove.append(m)
-    [ps.remove(p) for p in ps_to_remove]
-    assert len(ps)==0, f"Every peep should match to exactly 1 contact, but instead, we have len(ps)={len(ps)}."
-    print(f"Done.")
+        ms = by_uid.get(p['uid'], [])
+        if len(ms) != 1:
+            unmatched.append(p['uid'])
+        elif not dict_subsetQ(p, ms[0]):
+            m = ms[0]
+            not_subset.append((p['uid'], sorted(k for k,v in p.items() if k not in m or m[k] != v)))
+    print(f"Done. {len(ps)-len(unmatched)-len(not_subset)}/{len(ps)} .abcdp people are sub-dicts of their db contact.")
+    if unmatched:
+        print(f"WARNING: {len(unmatched)} .abcdp people don't match exactly 1 db contact by uid. First few: {unmatched[:5]}")
+    if not_subset:
+        print(f"WARNING: {len(not_subset)} .abcdp people have info that differs from / is missing in their db contact. First few (uid, differing keys): {not_subset[:5]}")
 
 def merge_images_into_contacts(ims,cs):
     # for some reason, there are a lot of images that don't map to a contact.

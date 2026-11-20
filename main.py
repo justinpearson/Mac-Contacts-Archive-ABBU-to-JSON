@@ -1,15 +1,17 @@
 from pprint import pprint as pp
 from pprint import pformat
 from pathlib import Path
-import plistlib, re, shutil
+import argparse, plistlib, re, shutil
 from lib import get_file_info, image_type, parse_abcddb, gather, merge_dicts, duplicate_freeQ, dict_subsetQ, export, IGNORED_MERGE_CONFLICTS
 from vcf import export_vcf, parse_extras, merge_extras
+from photos import DEFAULT_MAX_PX, DEFAULT_QUALITY
+from abbu import shrink_abbu
 
 VCF_MAX_CONTACTS_PER_FILE = 500  # each .vcf in out/vcf/ holds at most this many contacts
 
 # Parse a Mac Address Book file (.abbu) into JSON. See README.md for details.
 
-def main():
+def main(args):
     dirs = list(Path('./in/').glob('*.abbu'))
     assert len(dirs)==1, 'Expected exactly 1 .abbu file in the \'in\' dir!'
 
@@ -34,20 +36,33 @@ def main():
     assert (BASE_DIR / 'AddressBook-v22.abcddb').is_file(), f'Expected given dir "{BASE_DIR}" to have file "AddressBook-v22.abcddb"!'
     assert get_file_info(BASE_DIR / 'AddressBook-v22.abcddb').startswith('SQLite 3.x database'), f'''Expected file "{BASE_DIR / 'AddressBook-v22.abcddb'}" to be a SQLite db!'''
 
-    ps = load_people(BASE_DIR)
-    ims = load_image_files(BASE_DIR)
-    cs = load_contacts(BASE_DIR)
-    ps = clean_people(ps)
-    cs = clean_contacts(cs)
-    verify_people_are_subset_of_contacts(ps,cs)
-    orphaned_ims, cs = merge_images_into_contacts(ims,cs)
-    actually_copy_and_rename_image_files(cs, OUT_IMS_DIR)
-    actually_copy_and_rename_ORPHANED_image_files(orphaned_ims, OUT_ORPHAN_IMS_DIR)
-    export(cs,OUT_DIR / 'contacts.json')
-    print('START: extra fields & photos for VCF export')
-    extras = merge_extras([parse_extras(f) for f in BASE_DIR.glob('**/*.abcddb')])
-    print(f'Done: extra data for {len(extras)} people.')
-    export_vcf(cs, OUT_DIR / 'vcf', VCF_MAX_CONTACTS_PER_FILE, extras)
+    if args.dedupe_only:
+        # Skip contacts.json and the image copies: just write one sorted, de-duped, photo-shrunk .vcf.
+        cs = clean_contacts(load_contacts(BASE_DIR))
+        print('START: extra fields & photos for VCF export')
+        extras = merge_extras([parse_extras(f) for f in BASE_DIR.glob('**/*.abcddb')])
+        print(f'Done: extra data for {len(extras)} people.')
+        export_vcf(cs, OUT_DIR / 'dedupe', extras=extras, single_file='contacts-all.vcf',
+                   max_photo_px=args.photo_max_px, photo_quality=args.photo_quality)
+    else:
+        ps = load_people(BASE_DIR)
+        ims = load_image_files(BASE_DIR)
+        cs = load_contacts(BASE_DIR)
+        ps = clean_people(ps)
+        cs = clean_contacts(cs)
+        verify_people_are_subset_of_contacts(ps,cs)
+        orphaned_ims, cs = merge_images_into_contacts(ims,cs)
+        actually_copy_and_rename_image_files(cs, OUT_IMS_DIR)
+        actually_copy_and_rename_ORPHANED_image_files(orphaned_ims, OUT_ORPHAN_IMS_DIR)
+        export(cs,OUT_DIR / 'contacts.json')
+        print('START: extra fields & photos for VCF export')
+        extras = merge_extras([parse_extras(f) for f in BASE_DIR.glob('**/*.abcddb')])
+        print(f'Done: extra data for {len(extras)} people.')
+        export_vcf(cs, OUT_DIR / 'vcf', VCF_MAX_CONTACTS_PER_FILE, extras,
+                   max_photo_px=args.photo_max_px, photo_quality=args.photo_quality)
+
+    if args.shrink_abbu:
+        shrink_abbu(BASE_DIR, OUT_DIR / f'{BASE_DIR.stem}-small.abbu', args.photo_max_px or DEFAULT_MAX_PX, args.photo_quality)
 
     if IGNORED_MERGE_CONFLICTS:
         print(f"Info: while merging duplicate rows, kept the first value for these conflicting columns (count): {IGNORED_MERGE_CONFLICTS}")
@@ -494,5 +509,18 @@ def actually_copy_and_rename_ORPHANED_image_files(ims, outdir):
 
 
 
+def parse_args():
+    ap = argparse.ArgumentParser(description='Convert a Mac Contacts archive (.abbu in in/) into JSON, images and .vcf files in out/. See README.md.')
+    ap.add_argument('--dedupe-only', action='store_true',
+                    help='Skip contacts.json and the image copies; write one sorted, de-duped, photo-shrunk out/dedupe/contacts-all.vcf.')
+    ap.add_argument('--shrink-abbu', action='store_true',
+                    help='Also write out/<name>-small.abbu: a copy of the archive with every contact photo shrunk (no contacts merged or removed).')
+    ap.add_argument('--photo-max-px', type=int, default=DEFAULT_MAX_PX, metavar='N',
+                    help=f'Shrink photos so neither side exceeds N pixels (default {DEFAULT_MAX_PX}; 0 = keep original size in the .vcf files).')
+    ap.add_argument('--photo-quality', type=int, default=DEFAULT_QUALITY, metavar='Q',
+                    help=f'JPEG quality 1-100 for shrunken photos (default {DEFAULT_QUALITY}).')
+    return ap.parse_args()
+
+
 if __name__=='__main__':
-    main()
+    main(parse_args())

@@ -13,6 +13,7 @@ import unicodedata
 from pathlib import Path
 
 from lib import query, table_names, column_names, sniff_image_type
+from photos import shrink_photos, DEFAULT_QUALITY
 
 APPLE_EPOCH = datetime.datetime(2001, 1, 1)  # Core Data timestamps are seconds since this
 UUID_RE = re.compile(r'^[0-9A-Fa-f-]{36}$')
@@ -66,25 +67,35 @@ def _date_from_timestamp(ts, year):
     return (int(year) if year else None, dt.month, dt.day)
 
 
-def decode_photo(blob, external_dir):
-    '''Decode Apple's ZIMAGEDATA / ZTHUMBNAILIMAGEDATA blob into (image_type, bytes), or None.
-    First byte 0x01 = image bytes follow inline; 0x02 = NUL-terminated UUID of a file in external_dir.
+def locate_photo(blob, external_dir):
+    '''Work out where Apple's ZIMAGEDATA / ZTHUMBNAILIMAGEDATA blob keeps its image bytes.
+    First byte 0x01 = image bytes follow inline; 0x02 = NUL-terminated UUID of a file in external_dir;
+    anything else = the blob is the raw image.
+    Returns (kind, data, path): kind is 'inline', 'external' or 'raw', and path is the external file (else None).
+    Returns None if there is no usable image.
     '''
     if not blob:
         return None
     blob = bytes(blob)
     if blob[0] == 1:
-        data = blob[1:]
-    elif blob[0] == 2:
+        return 'inline', blob[1:], None
+    if blob[0] == 2:
         name = blob[1:].split(b'\0')[0].decode('ascii', 'ignore')
         if not UUID_RE.match(name):
             return None
         path = Path(external_dir) / name
         if not path.is_file():
             return None
-        data = path.read_bytes()
-    else:
-        data = blob
+        return 'external', path.read_bytes(), path
+    return 'raw', blob, None
+
+
+def decode_photo(blob, external_dir):
+    '''Decode Apple's ZIMAGEDATA / ZTHUMBNAILIMAGEDATA blob into (image_type, bytes), or None.'''
+    loc = locate_photo(blob, external_dir)
+    if not loc:
+        return None
+    data = loc[1]
     t = sniff_image_type(data[:32])
     return (t, data) if t else None
 
@@ -406,15 +417,32 @@ def dedupe_contacts(sorted_contacts, extras):
     return out, new_extras, removed
 
 
-def export_vcf(contacts, outdir, max_per_file=500, extras=None):
+def shrink_extras_photos(cs, extras, max_px, quality):
+    '''Return a copy of extras whose photos (for contacts cs only) are downscaled. Prints total bytes before/after.'''
+    keys = {c['uid']: extras[c['uid']]['photo'] for c in cs if extras.get(c['uid'], {}).get('photo')}
+    if not keys or not max_px:
+        return extras
+    shrunk = shrink_photos(keys, max_px, quality)
+    before = sum(len(p[1]) for p in keys.values())
+    after = sum(len(v[1]) for v in shrunk.values())
+    print(f'Photos: {len(keys)} shrunk to <= {max_px}px: {before / 1e6:.1f} MB -> {after / 1e6:.1f} MB.')
+    out = dict(extras)
+    for uid, (t, data, _scale) in shrunk.items():
+        out[uid] = {**extras[uid], 'photo': (t, data)}
+    return out
+
+
+def export_vcf(contacts, outdir, max_per_file=500, extras=None, max_photo_px=0, photo_quality=DEFAULT_QUALITY,
+               single_file=None):
     '''Write contacts, alphabetized, to outdir/contacts-001-of-NNN.vcf, ... with at most max_per_file each.
     Removes old contacts-*.vcf in outdir first so stale files from earlier runs don't linger.
-    Returns the list of files written.
+    If single_file is given (a file name), write all contacts to outdir/single_file instead (no splitting).
+    Photos are downscaled to max_photo_px (0 = keep originals). Returns the list of files written.
     '''
     extras = extras or {}
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    for old in outdir.glob('contacts-*.vcf'):
+    for old in outdir.glob(single_file or 'contacts-*.vcf'):
         old.unlink()
     # Drop contacts with no person name and no organization (they'd otherwise show up as just an email or phone).
     named = [c for c in contacts if any((c.get(k) or '').strip() for k in ('first', 'last', 'organization'))]
@@ -422,12 +450,15 @@ def export_vcf(contacts, outdir, max_per_file=500, extras=None):
     cs = sorted(named, key=sort_key)
     cs, extras, merged_away = dedupe_contacts(cs, extras)
     cs.sort(key=sort_key)  # merging can fill in fields (eg organization) that change a card's sort position
+    extras = shrink_extras_photos(cs, extras, max_photo_px, photo_quality)
+    if single_file:
+        max_per_file = max(1, len(cs))
     nfiles = max(1, -(-len(cs) // max_per_file))
     width = max(3, len(str(nfiles)))
     files, photos, skipped_photos = [], 0, 0
     for i in range(nfiles):
         chunk = cs[i * max_per_file:(i + 1) * max_per_file]
-        f = outdir / f'contacts-{i + 1:0{width}d}-of-{nfiles:0{width}d}.vcf'
+        f = outdir / (single_file or f'contacts-{i + 1:0{width}d}-of-{nfiles:0{width}d}.vcf')
         with open(f, 'w', encoding='utf-8', newline='') as fh:
             for c in chunk:
                 x = extras.get(c['uid'])

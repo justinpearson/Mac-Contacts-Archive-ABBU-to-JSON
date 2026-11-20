@@ -39,7 +39,7 @@ I wrote this Python program that extends ^-- that solution:
 
 Put a .abbu file in the `in/` directory and run this script.
 This script parses the contacts and images in the .abbu file,
-and creates 3 kinds of outputs in the `out/` directory:
+and creates these kinds of outputs in the `out/` directory:
 
 1. `contacts.json` contains the contacts, formatted nicely:
     ```
@@ -96,6 +96,42 @@ and creates 3 kinds of outputs in the `out/` directory:
 
 3. The `ims/orphans/` directory contains copies of images that were found in the abbu file,
     but whose filenames (UIDs) don't map to any UID of any contact.
+
+4. The `vcf/` directory contains the contacts as vCard (`.vcf`) files: alphabetized, de-duplicated (cards with the same name and a shared email or phone are merged), at most 500 contacts per file, with photos embedded.
+
+## Smaller photos
+
+Some contacts' photos are huge (a few are multi-megabyte, 3000+ pixels wide), which bloats the `.vcf` files.
+By default the photos embedded in the `.vcf` files are shrunk so neither side is more than 512 pixels,
+and re-encoded as JPEG (PNG if they have transparency). This typically cuts the `.vcf` size roughly in half or better,
+with the largest photos going from ~2.6 MB to ~200 KB. A photo is only replaced if the result is smaller, so a few
+already-tiny photos stay a bit over 512px. This uses macOS's built-in `sips`; on other systems photos are left as is (with a warning).
+
+    python3 main.py                        # default: photos shrunk to 512px, JPEG quality 80
+    python3 main.py --photo-max-px 800     # keep a bit more detail
+    python3 main.py --photo-max-px 0       # don't shrink the photos in the .vcf files
+
+(`--photo-quality Q` sets the JPEG quality, 1-100, default 80.)
+
+## Options for a clean archive
+
+- `--dedupe-only` skips `contacts.json` and the image copies and writes a single sorted, de-duplicated, photo-shrunk
+  `out/dedupe/contacts-all.vcf` (same merging and ordering as the split files in `vcf/`).
+- `--shrink-abbu` also writes `out/<name>-small.abbu`: a copy of your archive with every contact photo (and thumbnail)
+  shrunk. Nothing else changes: no contacts are merged or removed, and the original in `in/` is never touched.
+  The photo crop rectangles are scaled to match and each database is checked with `PRAGMA integrity_check`.
+  (Whether Contacts accepts the result is untested on my end beyond that; see the warning below.)
+
+**Why `--dedupe-only` makes a `.vcf` and not an `.abbu`:** most duplicates are the same person stored in different
+accounts (the archive's `Sources/*` databases), so merging them *inside* an `.abbu` would mean rewriting Apple's internal
+Core Data databases by hand, and the only way to test the result is "Import" in Contacts. To get a clean `.abbu`, let Apple write it:
+
+1. Run `python3 main.py --dedupe-only`.
+2. In a **separate macOS user (e.g. a Guest or spare user) or a Mac you don't mind changing**, open Contacts and import `out/dedupe/contacts-all.vcf` (File > Import).
+3. File > Export > Contacts Archive. That `.abbu` is sorted by Contacts, de-duplicated, and has the shrunken photos.
+
+> Importing any `.abbu` into Contacts **replaces all your Contacts data** (see the warning screenshot above). Never do this in your real account.
+> The `.vcf` route doesn't carry over contact groups or photo crop rectangles.
 
 
 

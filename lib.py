@@ -1,7 +1,7 @@
 from subprocess import run
 import sqlite3
+from contextlib import closing
 from pprint import pprint as pp
-from more_itertools import bucket
 from collections import OrderedDict
 from json import JSONEncoder
 import datetime
@@ -16,10 +16,46 @@ import json
 def get_file_info(f):
     return run(['file','--brief',f],capture_output=True,check=True,text=True).stdout
 
+def sniff_image_type(h):
+    '''Identify an image's type from its first bytes. Drop-in replacement for the stdlib's
+    imghdr.what() (removed in Python 3.13). Returns the same names imghdr used
+    ('jpeg', 'png', 'gif', 'tiff', 'bmp', 'webp', ...), or None if unrecognized.
+    '''
+    if h[6:10] in (b'JFIF', b'Exif') or h[:3] == b'\xff\xd8\xff':
+        return 'jpeg'
+    if h.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'png'
+    if h[:6] in (b'GIF87a', b'GIF89a'):
+        return 'gif'
+    if h[:2] in (b'MM', b'II') and h[2:4] in (b'\x00\x2a', b'\x2a\x00'):
+        return 'tiff'
+    if h.startswith(b'BM'):
+        return 'bmp'
+    if h[:4] == b'RIFF' and h[8:12] == b'WEBP':
+        return 'webp'
+    if h.startswith(b'\x59\xA6\x6A\x95'):
+        return 'rast'
+    if h.startswith(b'\x01\xda'):
+        return 'rgb'
+    if h.startswith(b'\x76\x2f\x31\x01'):
+        return 'exr'
+    if len(h) >= 3 and h[0:1] == b'P' and h[1:2] in b'123456' and h[2:3] in b' \t\n\r':
+        return {b'1': 'pbm', b'4': 'pbm', b'2': 'pgm', b'5': 'pgm', b'3': 'ppm', b'6': 'ppm'}[h[1:2]]
+    if h.startswith(b'#define '):
+        return 'xbm'
+    return None
+
+def image_type(path):
+    '''sniff_image_type() of the file at path.'''
+    with open(path, 'rb') as fh:
+        return sniff_image_type(fh.read(32))
+
 def gather(lst, f):
-    '''Force more_itertools's 'bucket' to have a more sensible API (like Mathematica's)... without all these iterators ;)'''
-    dic = bucket(lst,key=f)
-    return [list(dic[k]) for k in dic]
+    '''Group items of lst by key function f (like Mathematica's GatherBy), preserving first-seen order.'''
+    groups = {}
+    for x in lst:
+        groups.setdefault(f(x), []).append(x)
+    return list(groups.values())
 
 def diff_dicts(d1,d2):
     ks = set(list(d1.keys()) + list(d2.keys()))
@@ -43,13 +79,21 @@ def diff_dicts(d1,d2):
 # Funcs for DB stuff
 ##################################################
 
+def query(db, sql):
+    '''Run sql against sqlite db, returning (rows, column_names); always closes the connection.'''
+    with closing(sqlite3.connect(db)) as con:
+        cur = con.execute(sql)
+        rows = cur.fetchall()
+        cols = [r[0] for r in (cur.description or [])]
+    return rows, cols
+
 def table_names(db):
     '''Returns the names of the tables in the given sqlite db.'''
-    return [r[0] for r in sqlite3.connect(db).cursor().execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
+    return [r[0] for r in query(db, "SELECT name FROM sqlite_master WHERE type='table';")[0]]
 
 def column_names(t,db):
     '''Returns the (unqualified) column names of table t in sqlite database db.'''
-    return [ r[1] for r in sqlite3.connect(db).cursor().execute(f"PRAGMA table_info('{t}')").fetchall() ]
+    return [ r[1] for r in query(db, f"PRAGMA table_info('{t}')")[0] ]
 
 def num_rows(t,db):
     '''Gives the number of rows in table t of sqlite db.'''
@@ -57,7 +101,7 @@ def num_rows(t,db):
     # >>> x.fetchall()
     # [(90,)]        
     assert t in table_names(db)
-    return sqlite3.connect(db).cursor().execute(f"SELECT COUNT(1) FROM {t}").fetchall()[0][0]
+    return query(db, f"SELECT COUNT(1) FROM {t}")[0][0][0]
 
 def table_has_columnQ(t,c,db):
     return c in column_names(t,db)
@@ -163,10 +207,8 @@ def parse_abcddb(db : Path):
     print(q)
     print('~~~~~~~ END QUERY ~~~~~~~~~')
     print('Querying...')
-    x = sqlite3.connect(db).cursor().execute(q)
+    rs, cs = query(db, q)
     print('Done w/ query.')
-    rs = x.fetchall()
-    cs = [r[0] for r in x.description]
     print(f'Fetched {len(rs)} rows, {len(cs)} cols.')
     print("Convert to dicts, remove 'null' data...")
     ds = [dict((k,v) for k,v in zip(cs,r) if v) for r in rs]  # "if v" to omit keys that are None, 0, '', [], ...
@@ -177,6 +219,8 @@ def parse_abcddb(db : Path):
     return ds
 
 
+
+IGNORED_MERGE_CONFLICTS = {}  # key -> number of times merge_dicts kept the first of conflicting scalar values
 
 def merge_dicts(dlist : list):
     '''Smoosh the given dicts into a single dict: Take the first dict,
@@ -199,16 +243,19 @@ def merge_dicts(dlist : list):
                         # vals differ. if vals are lists, concat them. else, complain.
                         if type(z[k]) == list and type(v) == list:
                             z[k].extend(v)
-                        else:
+                        elif k in ('uid', 'first', 'last', 'organization'):
                             raise ValueError(f"Uh oh: different vals and non-lists: key '{k}', z[k] = '{z[k]}'', y[k] = '{y[k]}'")
+                        else:
+                            # Stray per-row column (eg a legacy id that differs per phone/email row): keep the first value.
+                            IGNORED_MERGE_CONFLICTS[k] = IGNORED_MERGE_CONFLICTS.get(k, 0) + 1
     return z
 
 
 def duplicate_freeQ(lst, f):
     dup_groups = list(filter(lambda g: len(g)!=1, gather(lst,f)))
     if len(dup_groups)>0:
-        print(f"WARNING: {sum(len(g) for g in dup_groups)}/{len(lst)} elems are duplicates; {len(dup_groups)} subsets:")
-        pp(dup_groups)
+        print(f"WARNING: {sum(len(g) for g in dup_groups)}/{len(lst)} elems are duplicates; {len(dup_groups)} subsets. Example subset (first {min(3,len(dup_groups[0]))} elems):")
+        pp(dup_groups[0][:3], width=200, compact=True)  # printing every group is huge (and can exhaust memory) on a real address book.
         return False
     else:
         return True
